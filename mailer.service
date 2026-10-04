@@ -1,0 +1,53 @@
+# SMTP -> Telegram relay.
+#
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin mailer
+#   sudo install -d -o mailer -g mailer /opt/mailer
+#   sudo install -o mailer -g mailer -m 755 mailer /opt/mailer/mailer
+#   sudo install -o mailer -g mailer -m 600 .env  /opt/mailer/.env
+#   sudo cp mailer.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now mailer
+
+[Unit]
+Description=SMTP to Telegram relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mailer
+Group=mailer
+
+# .env is looked for here first; the binary's own directory is the fallback.
+WorkingDirectory=/opt/mailer
+ExecStart=/opt/mailer/mailer
+
+Restart=always
+RestartSec=5s
+
+# Bind port 25 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+# The only writes are attachment spools above 512 KB, which land in the private
+# /tmp that PrivateTmp provides. Everything else stays read-only.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
