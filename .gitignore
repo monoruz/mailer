@@ -1,0 +1,30 @@
+# Build output (make / make local / make arm64)
+/mailer
+/mailer-arm64
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.html
+go.work
+go.work.sum
+vendor/
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
