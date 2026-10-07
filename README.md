@@ -3,8 +3,9 @@
 A small SMTP server that turns incoming email into Telegram notifications.
 
 It listens for SMTP, accepts mail addressed to a whitelist of domains, and posts a
-formatted summary to a Telegram chat — then uploads each attachment as a Telegram
-document. It never relays mail onward.
+formatted summary to a Telegram chat. When the body is too long for one message, the
+whole email follows as a sanitized `.html` file; attachments follow as documents. It
+never relays mail onward.
 
 Written against the Go standard library only: no modules, no `go.sum`, no vendor
 directory. A stripped `linux/amd64` build is ~5.8 MB and idles around 5 MB RSS.
@@ -25,19 +26,22 @@ chmod 600 .env
 Send a test mail to the running port and the chat receives:
 
 ```
-📧 New Email Received
+✉️ Invoice for September
 
-From: Alice <alice@sender.org>
-To: bob@example.com
-Subject: Invoice for September
+👤 Alice <alice@sender.org>
+📥 bob@example.com
+🕒 7 Oct 2026, 14:03 UTC
 
-📎 1 attachment(s): invoice.pdf
+┃ Hi, invoice attached.        <- expandable quote
+┃ Thanks, Alice
 
-Body
-Hi, invoice attached.
+📎 1 file · invoice.pdf
 ```
 
-followed by `invoice.pdf` as a document.
+followed by `invoice.pdf` as a document, sent as a silent reply to the summary.
+
+A body longer than the message can hold is clipped with `…`, the summary ends with
+`📄 Full email attached below`, and `Invoice for September.html` follows as a reply.
 
 ## Configuration
 
@@ -52,6 +56,7 @@ environment per key.
 | `SMTP_PORT` | `25` | Listen port. |
 | `SEND_ATTACHMENTS` | `1` | `0` counts attachments without uploading them. |
 | `MAX_ATTACHMENT_BYTES` | `20971520` (20 MB) | Per-file cap. Telegram's own bot upload ceiling is ~50 MB. |
+| `TZ` | system | Time zone for the date line, e.g. `Asia/Tehran`. Unlike Go's own `TZ` handling, also read from `.env`. |
 | `DEBUG` | off | `1` logs every MIME part decision and Telegram reply. |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | API override, for testing against a local stub. |
 | `ENV_FILE` | — | Explicit path to the config file. Read from the environment only. |
@@ -99,8 +104,10 @@ journalctl -u mailer -f
 Every accepted mail logs one line:
 
 ```
-mail to=bob@example.com attachments=2 forwarded=2
+mail to=bob@example.com attachments=2 forwarded=2 full=false
 ```
+
+`full=true` means the body did not fit and the `.html` file was sent too.
 
 `forwarded=0` alongside a non-zero `attachments` means uploads failed; the reason is
 on the preceding line. Rejected recipients log instead:
@@ -152,8 +159,9 @@ envelope `RCPT TO` address is used instead.
 The message is streamed, never buffered whole. `net/mail` reads only the headers,
 then the MIME tree is walked with `mime/multipart`, at most 8 levels deep:
 
-- The **body** is the first `text/plain` part, trimmed to 1000 characters. With no
-  plain-text part, the HTML is tag-stripped as a fallback.
+- The **body** is the first `text/plain` part. With no plain-text part, the HTML is
+  flattened to text, keeping the line breaks its block elements imply and dropping
+  the invisible padding marketing mail puts in its preheader.
 - Every other leaf — anything with `Content-Disposition: attachment`, a `filename`
   or `name` parameter, or a non-`text/*` type — counts as an attachment.
 - Attachment parts that are not forwarded are discarded without being read, so a
@@ -171,10 +179,33 @@ is reclaimed on close and nothing survives a crash. The upload streams straight 
 the spool with an exact `Content-Length`, so the file is never copied into a second
 buffer.
 
-The summary message is sent first, then one `sendDocument` per file, all before the
+The summary message is sent first, then the full email when needed, then one
+`sendDocument` per file. Everything after the summary is a silent reply to it, so one
+mail makes one notification and its files stay grouped. All of it happens before the
 SMTP `250` — which keeps backpressure on the sender rather than acknowledging mail
 that has not been delivered to Telegram yet. A file over the cap is listed in the
 summary as `(too large)` and skipped.
+
+### Full email file
+
+Sent when the body is longer than the space left in the summary (at most 3000
+characters), or when it was too long to capture whole. It is a standalone page: a
+header card (subject, from, to, cc, date, files) over the mail's own HTML, or over the
+plain text with its links made clickable when the mail has no HTML part.
+
+The mail's HTML is sanitized before it is written out, since the file is opened on a
+phone straight from the chat:
+
+- A `Content-Security-Policy` meta tag blocks scripts, every remote load (images,
+  fonts, CSS) and form submission. This is the main barrier.
+- Defense in depth, for viewers that ignore CSP: `<script>`, `<iframe>`, `<object>`,
+  `<embed>` and similar are removed with their content; `on*` handlers, `srcset`,
+  form actions and `javascript:`/`vbscript:`/`data:` URLs are dropped; remote
+  `<img src>` is renamed to `data-blocked-src`, so tracking pixels never fire.
+- Links open in a new tab with no referrer.
+
+The card notes how many remote images were blocked, and when the mail was longer
+than the capture limit.
 
 ### Limits
 
@@ -183,8 +214,9 @@ summary as `(too large)` and skipped.
 | Bytes per connection | 40 MB | A 20 MB attachment is ~27 MB once base64-encoded. |
 | Concurrent connections | 64 | |
 | Command line length | 1 KB | |
-| Body captured | 16 KB plain / 64 KB HTML | Trimmed to 1000 characters afterwards. |
-| Telegram text | 3800 characters | Under the API's 4096 limit. |
+| Body captured | 256 KB plain / 512 KB HTML | Kept whole for the full-email file. |
+| Body shown inline | 3000 characters | Less when long headers take the room. |
+| Telegram text | 4000 UTF-16 units | Under the API's 4096 limit, counted the way the API counts. |
 | Attachments forwarded | 10 per message | Further ones are counted only. |
 | Spooled per message | 30 MB | |
 | Messages spooling at once | 8 | Caps transient disk at roughly 240 MB. |
