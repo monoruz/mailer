@@ -1,4 +1,5 @@
-// Minimal SMTP -> Telegram relay. Standard library only.
+// Minimal SMTP -> Telegram relay with a small web inbox, compose/sent and an
+// MCP endpoint. The only dependency outside the standard library is bbolt.
 //
 // Configuration is read from a .env file when one exists (looked for at
 // $ENV_FILE, then ./.env, then next to the binary); any key it does not define
@@ -7,9 +8,16 @@
 // Keys:
 //
 //	RADAR_BOT_TOKEN       Telegram bot token
-//	TELEGRAM_CHAT_ID      Telegram chat id
+//	TELEGRAM_CHAT_ID      first Telegram destination, seeded into the DB on first start
+//	VALID_DOMAINS         recipient domains, seeded into the DB on first start
 //	SMTP_PORT             listen port (default 25)
-//	VALID_DOMAINS         comma separated recipient domain whitelist
+//	WEB_ADDR              web UI listen address (default 127.0.0.1:8025)
+//	WEB_PUBLIC_URL        public URL of the web UI; adds an "open" link to chat messages
+//	DB_PATH               bbolt file (default mailer.db)
+//	MAIL_TTL              how long mail is kept (default 168h)
+//	STORE_MAX_BYTES       attachment bytes stored per mail (default 10485760)
+//	MAIL_HOSTNAME         HELO name for outbound mail (default: the hostname)
+//	FORWARD_FROM          sender of forwarded mail (default: the address it was sent to)
 //	SEND_ATTACHMENTS      forward attachments as documents (default 1, "0" to disable)
 //	MAX_ATTACHMENT_BYTES  per-file cap (default 20971520; Telegram bot ceiling is ~50 MB)
 //	TELEGRAM_API_BASE     API base override (default https://api.telegram.org)
@@ -39,6 +47,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -61,13 +70,15 @@ const (
 
 var (
 	botToken        string
-	chatID          string
-	validDomains    = map[string]struct{}{}
+	chatID          string // TELEGRAM_CHAT_ID: seed and -test-upload target only
 	hostname        = "mailrelay"
 	apiBase         = "https://api.telegram.org"
 	sendAttachments = true
 	debugOn         = false
 	maxAttachBytes  = int64(20 << 20)
+	storeMaxBytes   = int64(10 << 20)
+	mailTTL         = 7 * 24 * time.Hour
+	webPublicURL    string
 	spoolSem        = make(chan struct{}, spoolConcurrency)
 	dotenv          map[string]string
 	textClient      = &http.Client{Timeout: 20 * time.Second}
@@ -83,14 +94,24 @@ func main() {
 	if v := getenv("DEBUG"); v == "1" || strings.EqualFold(v, "true") {
 		debugOn = true
 	}
-	if botToken == "" || chatID == "" {
-		log.Println("warning: RADAR_BOT_TOKEN or TELEGRAM_CHAT_ID is empty; sends will fail")
+	if botToken == "" {
+		log.Println("warning: RADAR_BOT_TOKEN is empty; Telegram sends will fail")
 	}
+	var seedDomains []string
 	for _, d := range strings.Split(getenv("VALID_DOMAINS"), ",") {
-		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
-			validDomains[d] = struct{}{}
+		if d, err := normDomain(d); err == nil {
+			seedDomains = append(seedDomains, d)
 		}
 	}
+	if v, err := time.ParseDuration(getenv("MAIL_TTL")); err == nil && v > 0 {
+		mailTTL = v
+	}
+	if v, err := strconv.ParseInt(getenv("STORE_MAX_BYTES"), 10, 64); err == nil && v >= 0 {
+		storeMaxBytes = v
+	}
+	webPublicURL = strings.TrimSuffix(getenv("WEB_PUBLIC_URL"), "/")
+	forwardFromAddr = strings.TrimSpace(getenv("FORWARD_FROM"))
+	webAddr := orDefault(getenv("WEB_ADDR"), "127.0.0.1:8025")
 	if v := getenv("SEND_ATTACHMENTS"); v == "0" || strings.EqualFold(v, "false") {
 		sendAttachments = false
 	}
@@ -114,11 +135,31 @@ func main() {
 	if h, err := os.Hostname(); err == nil && h != "" {
 		hostname = h
 	}
+	heloName = orDefault(getenv("MAIL_HOSTNAME"), hostname)
 
 	if len(os.Args) == 3 && os.Args[1] == "-test-upload" {
 		testUpload(os.Args[2])
 		return
 	}
+
+	var err error
+	dbPath := orDefault(getenv("DB_PATH"), "mailer.db")
+	if db, err = openStore(dbPath); err != nil {
+		log.Fatalf("store: open %s: %v", dbPath, err)
+	}
+	if err := db.seed(seedDomains, chatID); err != nil {
+		log.Fatalf("store: seed: %v", err)
+	}
+	db.reloadRules()
+	if len(rules.Load().domains) == 0 {
+		log.Println("warning: no allowed domains; every mail is dropped until one is added in the web UI")
+	}
+	log.Printf("store: %s, mail kept %v", dbPath, mailTTL)
+	go db.expiryLoop()
+	for range 2 {
+		go forwardWorker()
+	}
+	go serveWeb(webAddr)
 
 	ln, err := net.Listen("tcp", ":"+port)
 	if err != nil {
@@ -238,7 +279,7 @@ func serve(conn net.Conn) {
 	}
 
 	var haveMail bool
-	var rcpt string
+	var from, rcpt string
 	for {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		line, err := readCmdLine(br)
@@ -255,7 +296,7 @@ func serve(conn net.Conn) {
 				return
 			}
 		case "MAIL":
-			haveMail, rcpt = true, ""
+			haveMail, from, rcpt = true, bracketed(arg), ""
 			reply("250 2.1.0 OK")
 		case "RCPT":
 			if !haveMail {
@@ -276,7 +317,7 @@ func serve(conn net.Conn) {
 			}
 			conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 			dot := tp.DotReader()
-			err := handleMessage(dot, rcpt)
+			err := handleMessage(dot, from, rcpt)
 			io.Copy(io.Discard, dot) // always consume the rest of DATA
 			haveMail, rcpt = false, ""
 			if err != nil {
@@ -343,6 +384,7 @@ type header interface{ Get(string) string }
 
 type attachment struct {
 	name     string
+	ctype    string
 	sp       *spool // nil when the part was only counted, not spooled
 	oversize bool
 }
@@ -371,7 +413,7 @@ func (p *parsed) release() {
 	}
 }
 
-func handleMessage(r io.Reader, envelopeRcpt string) error {
+func handleMessage(r io.Reader, envelopeFrom, envelopeRcpt string) error {
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
 		return err
@@ -383,12 +425,15 @@ func handleMessage(r io.Reader, envelopeRcpt string) error {
 	if toAddr == "" {
 		toAddr = envelopeRcpt // header-less / Bcc-style delivery
 	}
-	domain := ""
-	if i := strings.LastIndexByte(toAddr, '@'); i >= 0 {
-		domain = strings.ToLower(toAddr[i+1:])
-	}
-	if _, ok := validDomains[domain]; !ok {
+	toAddr = strings.ToLower(toAddr)
+	rs := rules.Load()
+	if domain := domainOf(toAddr); !rs.domains[domain] {
 		log.Printf("Rejected: destination domain %q not whitelisted", domain)
+		return nil
+	}
+	fromAddr := strings.ToLower(orDefault(firstAddress(msg.Header.Get("From"), dec), envelopeFrom))
+	if matchAny(rs.blocked, fromAddr) {
+		log.Printf("Blocked: sender %q", fromAddr)
 		return nil
 	}
 
@@ -404,38 +449,129 @@ func handleMessage(r io.Reader, envelopeRcpt string) error {
 		date:    mailDate(msg.Header.Get("Date")),
 		files:   p.attachmentLine(),
 	}
+
+	m := &Mail{
+		At:       time.Now(),
+		From:     v.from,
+		FromAddr: fromAddr,
+		ReplyTo:  strings.ToLower(firstAddress(msg.Header.Get("Reply-To"), dec)),
+		To:       v.to,
+		ToAddr:   toAddr,
+		Cc:       v.cc,
+		Subject:  v.subject,
+		Date:     v.date,
+		MsgID:    truncate(strings.TrimSpace(msg.Header.Get("Message-Id")), 500),
+		Refs:     truncate(strings.Join(strings.Fields(msg.Header.Get("References")), " "), 2000),
+	}
+	files := p.storable(m)
+	err = db.saveMail(m, &Body{Text: p.text, HTML: p.htmlText, TextCut: p.textCut, HTMLCut: p.htmlCut}, files)
+	files = nil
+	if err != nil {
+		return fmt.Errorf("store: %w", err) // 451: the sender retries later
+	}
+	if webPublicURL != "" {
+		v.link = webPublicURL + "/mail/" + idHex(m.ID)
+	}
+
 	body, cut := tidyText(p.text, false), p.textCut
 	if body == "" {
 		body, cut = htmlToText(p.htmlText), p.htmlCut
 	}
-
 	summary, full := v.summary(body, cut)
-	replyTo, err := sendMessage(summary)
-	if err != nil {
-		log.Println("sendMessage:", err)
+	var fullName string
+	var fullPage []byte
+	if full {
+		fullName, fullPage = v.fullEmail(p)
 	}
 
-	if full {
-		name, page := v.fullEmail(p)
-		doc := docOpts{replyTo: replyTo, caption: "📄 Full email", silent: true}
-		if err := sendDocument(name, &spool{buf: page, size: int64(len(page))}, doc); err != nil {
-			log.Printf("sendDocument %s (%d bytes): %v", name, len(page), err)
+	dests := rs.destsFor(fromAddr)
+	for _, d := range dests {
+		switch d.Kind {
+		case kindTelegram:
+			sent, err := p.toTelegram(d.Target, summary, fullName, fullPage)
+			if err != nil {
+				log.Printf("telegram %s: %v", d.Target, err)
+				db.appendLog(m.ID, "✈ "+orDefault(d.Name, d.Target)+": failed: "+truncate(err.Error(), 200))
+			} else {
+				db.appendLog(m.ID, fmt.Sprintf("✈ %s: sent, %d file(s)", orDefault(d.Name, d.Target), sent))
+			}
+		case kindEmail:
+			db.appendLog(m.ID, "✉ "+d.Target+": queued")
+			enqueueForward(fwdJob{mailID: m.ID, to: d.Target})
 		}
 	}
+	log.Printf("mail id=%s from=%s to=%s attachments=%d destinations=%d full=%v",
+		idHex(m.ID), fromAddr, toAddr, p.count, len(dests), full)
+	if p.spooled > 1<<20 {
+		freeLater()
+	}
+	return nil
+}
 
-	sent := 0
+var freePending atomic.Bool
+
+// freeLater hands the heap a large mail grew back to the OS once the session
+// has let go of it, instead of waiting minutes for the background scavenger.
+func freeLater() {
+	if freePending.Swap(true) {
+		return
+	}
+	time.AfterFunc(2*time.Second, func() {
+		freePending.Store(false)
+		debug.FreeOSMemory()
+	})
+}
+
+// toTelegram posts the summary to one chat, then the full email and the
+// attachments as silent replies to it. It fails only when the summary does.
+func (p *parsed) toTelegram(chat, summary, fullName string, fullPage []byte) (sent int, err error) {
+	replyTo, err := sendMessage(chat, summary)
+	if err != nil {
+		return 0, err
+	}
+	if fullPage != nil {
+		doc := docOpts{replyTo: replyTo, caption: "📄 Full email", silent: true}
+		if err := sendDocument(chat, fullName, &spool{buf: fullPage, size: int64(len(fullPage))}, doc); err != nil {
+			log.Printf("sendDocument %s (%d bytes): %v", fullName, len(fullPage), err)
+		}
+	}
+	if !sendAttachments {
+		return 0, nil
+	}
 	for _, a := range p.atts {
 		if a.sp == nil || a.oversize {
 			continue
 		}
-		if err := sendDocument(a.name, a.sp, docOpts{replyTo: replyTo, silent: true}); err != nil {
+		if err := sendDocument(chat, a.name, a.sp, docOpts{replyTo: replyTo, silent: true}); err != nil {
 			log.Printf("sendDocument %s (%d bytes): %v", a.name, a.sp.size, err)
 			continue
 		}
 		sent++
 	}
-	log.Printf("mail to=%s attachments=%d forwarded=%d full=%v", toAddr, p.count, sent, full)
-	return nil
+	return sent, nil
+}
+
+// storable fills m.Files and returns the bytes of the attachments that fit
+// in STORE_MAX_BYTES, index-aligned with m.Files (nil: listed, not stored).
+func (p *parsed) storable(m *Mail) [][]byte {
+	out := make([][]byte, len(p.atts))
+	budget := storeMaxBytes
+	for i, a := range p.atts {
+		f := FileMeta{Name: a.name, Type: a.ctype}
+		if a.sp != nil {
+			f.Size = a.sp.size
+		}
+		if a.sp != nil && !a.oversize && a.sp.size <= budget {
+			if r, err := a.sp.reader(); err == nil {
+				if b, err := io.ReadAll(r); err == nil {
+					out[i], f.Stored = b, true
+					budget -= int64(len(b))
+				}
+			}
+		}
+		m.Files = append(m.Files, f)
+	}
+	return out
 }
 
 // attachmentLine lists the attachments, or returns "" when there are none.
@@ -489,7 +625,7 @@ func (p *parsed) walk(h header, body io.Reader, depth int) {
 	if disp == "attachment" || dparams["filename"] != "" || params["name"] != "" ||
 		!strings.HasPrefix(mediatype, "text/") {
 		debugf("part depth=%d type=%s disp=%s cte=%s -> attachment", depth, mediatype, disp, h.Get("Content-Transfer-Encoding"))
-		p.takeAttachment(h, body, dparams["filename"], params["name"])
+		p.takeAttachment(h, body, mediatype, dparams["filename"], params["name"])
 		return
 	}
 	debugf("part depth=%d type=%s disp=%s cte=%s -> body", depth, mediatype, disp, h.Get("Content-Transfer-Encoding"))
@@ -502,12 +638,12 @@ func (p *parsed) walk(h header, body io.Reader, depth int) {
 }
 
 // takeAttachment counts a part and, when enabled and within budget, spools it for upload.
-func (p *parsed) takeAttachment(h header, body io.Reader, filename, name string) {
+func (p *parsed) takeAttachment(h header, body io.Reader, ctype, filename, name string) {
 	p.count++
 	label := safeFilename(decodeHeader(p.dec, orDefault(filename, name)), p.count)
 
-	if !sendAttachments || len(p.atts) >= maxAttachments || p.spooled >= maxSpoolTotal {
-		p.atts = append(p.atts, attachment{name: label})
+	if !sendAttachments && storeMaxBytes == 0 || len(p.atts) >= maxAttachments || p.spooled >= maxSpoolTotal {
+		p.atts = append(p.atts, attachment{name: label, ctype: ctype})
 		return
 	}
 	if !p.holdsSpool {
@@ -522,7 +658,7 @@ func (p *parsed) takeAttachment(h header, body io.Reader, filename, name string)
 	sp, err := spoolFrom(decodeReader(body, h.Get("Content-Transfer-Encoding")), limit)
 	if err != nil {
 		log.Printf("spool %s: %v", label, err)
-		p.atts = append(p.atts, attachment{name: label})
+		p.atts = append(p.atts, attachment{name: label, ctype: ctype})
 		return
 	}
 	p.spooled += sp.size
@@ -531,7 +667,7 @@ func (p *parsed) takeAttachment(h header, body io.Reader, filename, name string)
 		where = "tempfile"
 	}
 	debugf("spooled %q bytes=%d in=%s oversize=%v", label, sp.size, where, sp.oversize)
-	p.atts = append(p.atts, attachment{name: label, sp: sp, oversize: sp.oversize})
+	p.atts = append(p.atts, attachment{name: label, ctype: ctype, sp: sp, oversize: sp.oversize})
 }
 
 // ---------------------------------------------------------------- spool
@@ -601,6 +737,7 @@ func spoolFrom(r io.Reader, limit int64) (*spool, error) {
 // mailView holds the decoded headers shown in the chat and in the full email.
 type mailView struct {
 	subject, from, to, cc, date, files string
+	link                               string // web UI page for this mail, when WEB_PUBLIC_URL is set
 }
 
 // tgText builds Telegram HTML while counting what the API holds against its
@@ -643,7 +780,12 @@ func (v *mailView) summary(body string, cut bool) (msg string, full bool) {
 	if v.files != "" {
 		files = "\n📎 " + v.files
 	}
-	room := min(maxTelegramText-t.n-u16len(files)-u16len(footer)-2, maxPreviewChars)
+	const linkText = "\n🔗 Open in inbox"
+	linkLen := 0
+	if v.link != "" {
+		linkLen = u16len(linkText)
+	}
+	room := min(maxTelegramText-t.n-u16len(files)-linkLen-u16len(footer)-2, maxPreviewChars)
 	preview, clipped := clip(body, room)
 	full = clipped || cut
 
@@ -658,6 +800,12 @@ func (v *mailView) summary(body string, cut bool) (msg string, full bool) {
 		t.tag("</blockquote>")
 	}
 	t.text(files)
+	if v.link != "" {
+		t.text("\n")
+		t.tag(`<a href="` + html.EscapeString(v.link) + `">`)
+		t.text(linkText[1:])
+		t.tag("</a>")
+	}
 	if full {
 		t.text(footer)
 	}
@@ -991,9 +1139,9 @@ func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\
 
 // sendMessage posts an HTML-formatted message and returns its id, so the
 // documents that follow can be threaded under it.
-func sendMessage(text string) (int64, error) {
+func sendMessage(chat, text string) (int64, error) {
 	payload, err := json.Marshal(map[string]any{
-		"chat_id":              chatID,
+		"chat_id":              chat,
 		"text":                 text,
 		"parse_mode":           "HTML",
 		"link_preview_options": map[string]bool{"is_disabled": true},
@@ -1026,10 +1174,10 @@ type docOpts struct {
 
 // sendDocument streams one spooled file as multipart/form-data with an exact
 // Content-Length, so nothing is copied into a second buffer.
-func sendDocument(name string, sp *spool, o docOpts) error {
+func sendDocument(chat, name string, sp *spool, o docOpts) error {
 	var head bytes.Buffer
 	mw := multipart.NewWriter(&head)
-	fields := [][2]string{{"chat_id", chatID}}
+	fields := [][2]string{{"chat_id", chat}}
 	if o.caption != "" {
 		fields = append(fields, [2]string{"caption", truncate(o.caption, maxCaptionText)})
 	}
@@ -1102,7 +1250,7 @@ func testUpload(path string) {
 	debugOn = true
 	name := safeFilename(fi.Name(), 1)
 	log.Printf("uploading %q (%d bytes) to chat %s", name, fi.Size(), chatID)
-	if err := sendDocument(name, &spool{f: f, size: fi.Size()}, docOpts{}); err != nil {
+	if err := sendDocument(chatID, name, &spool{f: f, size: fi.Size()}, docOpts{}); err != nil {
 		log.Fatalf("FAILED: %v", err)
 	}
 	log.Println("OK: Telegram accepted the upload")

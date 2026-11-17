@@ -1,0 +1,375 @@
+{{define "layout"}}<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · mailer</title>
+<style>
+:root{--bg:#f4f4f6;--card:#fff;--fg:#1c1c1e;--mute:#6e6e73;--line:#e3e3e8;--acc:#0a66d8;--bad:#c62828;--good:#1b7f3b;--unread:#eef4ff}
+@media (prefers-color-scheme:dark){:root{--bg:#000;--card:#1c1c1e;--fg:#f2f2f7;--mute:#98989f;--line:#2c2c2e;--acc:#4c9bff;--bad:#ff6b6b;--good:#4cd07d;--unread:#17233a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+a{color:var(--acc);text-decoration:none}
+nav{display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2}
+nav a{padding:6px 10px;border-radius:8px;color:var(--fg)}
+nav a.on{background:var(--bg);font-weight:600}
+nav .brand{font-weight:700;margin-right:8px}
+nav a.compose{background:var(--acc);color:#fff;font-weight:600}
+nav a.compose.on{background:var(--acc);color:#fff;box-shadow:inset 0 0 0 2px rgba(255,255,255,.35)}
+.from{display:flex;align-items:center;gap:4px}.from input{flex:1;min-width:80px}.from select{width:auto;max-width:60%}
+input[type=file]{padding:5px}
+.badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--acc);color:#fff;font-size:11px;text-align:center}
+main{max-width:1000px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+h1{font-size:19px;margin:0 0 10px;word-break:break-word}
+h2{font-size:15px;margin:0 0 10px}
+.mute{color:var(--mute)}
+.hint{color:var(--mute);font-size:13px;margin:0 0 12px}
+table{width:100%;border-collapse:collapse}
+td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-weight:600;color:var(--mute);font-size:12px}
+tr.unread td{background:var(--unread);font-weight:600}
+td.subj{word-break:break-word}
+td.nowrap,th.nowrap{white-space:nowrap}
+.row-link{color:inherit;display:block}
+input,select,textarea,button{font:inherit;color:inherit}
+input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px 9px;width:100%}
+textarea{min-height:140px;resize:vertical}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:7px 12px;cursor:pointer;white-space:nowrap}
+button.ghost{background:transparent;color:var(--acc);border:1px solid var(--line)}
+button.danger{background:transparent;color:var(--bad);border:1px solid var(--line)}
+.grid{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));align-items:end}
+.inline{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+dl{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin:0}
+dt{color:var(--mute)}dd{margin:0;word-break:break-word}
+pre.body{white-space:pre-wrap;word-wrap:break-word;margin:0;font:inherit}
+iframe{width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;background:#fff;resize:vertical}
+.ok{color:var(--good)}.err{color:var(--bad)}
+.tag{display:inline-block;padding:1px 6px;border-radius:6px;border:1px solid var(--line);font-size:12px;margin:1px 2px 1px 0}
+.off{opacity:.5}
+.htmx-indicator{display:none}.htmx-request .htmx-indicator,.htmx-request.htmx-indicator{display:inline}
+ul.log{margin:0;padding-left:18px;font-size:13px}
+@media (max-width:640px){.hide-sm{display:none}main{padding:10px}}
+</style>
+<script src="/static/htmx.min.js"></script>
+<script src="/static/app.js"></script>
+</head>
+<body hx-boost="true">
+<nav>
+  <span class="brand">✉️ mailer</span>
+  <a href="/" class="{{if eq .Nav "inbox"}}on{{end}}">Inbox {{if .Unread}}<span class="badge">{{.Unread}}</span>{{end}}</a>
+  <a href="/compose" class="compose {{if eq .Nav "compose"}}on{{end}}">✎ Compose</a>
+  <a href="/sent" class="{{if eq .Nav "sent"}}on{{end}}">Sent</a>
+  <a href="/dests" class="{{if eq .Nav "dests"}}on{{end}}">Destinations</a>
+  <a href="/domains" class="{{if eq .Nav "domains"}}on{{end}}">Allowed domains</a>
+  <a href="/blocked" class="{{if eq .Nav "blocked"}}on{{end}}">Blocked senders</a>
+</nav>
+<main>
+{{with .Data}}
+{{if eq .Body "inbox"}}{{template "inbox" .D}}
+{{else if eq .Body "mail"}}{{template "mail" .D}}
+{{else if eq .Body "compose"}}{{template "compose" .D}}
+{{else if eq .Body "sent"}}{{template "sent" .D}}
+{{else if eq .Body "sent-mail"}}{{template "sent-mail" .D}}
+{{else if eq .Body "rules"}}{{template "rules" .D}}
+{{else if eq .Body "dests"}}{{template "dests" .D}}
+{{end}}
+{{end}}
+</main>
+</body></html>
+{{end}}
+
+{{define "flash"}}<span class="{{if .OK}}ok{{else}}err{{end}}">{{.Msg}}</span>{{end}}
+
+{{/* ------------------------------------------------------------ inbox */}}
+
+{{define "inbox"}}
+<div class="card">
+  <form class="inline" action="/" method="get">
+    <input type="search" name="q" value="{{.Q}}" placeholder="Search sender, recipient or subject" style="flex:1;min-width:180px">
+    <button>Search</button>
+    {{if .Q}}<a href="/">Clear</a>{{end}}
+  </form>
+</div>
+<div class="card" style="padding:4px 10px">
+<table>
+  <thead><tr><th>From</th><th>Subject</th><th class="hide-sm">To</th><th class="nowrap">Received</th><th></th></tr></thead>
+  <tbody id="mail-rows" {{if not (or .Q .Paged)}}hx-get="/" hx-trigger="every 30s" hx-swap="innerHTML"{{end}}>
+  {{template "mail-rows" .}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+{{define "mail-rows"}}
+{{range .Rows}}
+<tr class="{{if not .Read}}unread{{end}}">
+  <td><a class="row-link" href="/mail/{{id .ID}}" title="{{.From}}">{{.FromAddr}}</a></td>
+  <td class="subj"><a class="row-link" href="/mail/{{id .ID}}">{{.Subject}}{{if .Files}} 📎{{end}}{{if .Replied}} <span class="mute">↩</span>{{end}}</a></td>
+  <td class="hide-sm mute">{{.ToAddr}}</td>
+  <td class="nowrap mute" title="expires in {{left .At}}">{{ago .At}}</td>
+  <td><button class="danger" hx-delete="/mail/{{id .ID}}" hx-confirm="Delete this mail?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
+</tr>
+{{else}}
+<tr><td colspan="5" class="mute">No mail{{if .Q}} matches “{{.Q}}”{{end}}.</td></tr>
+{{end}}
+{{if .More}}<tr><td colspan="5"><a href="/?before={{id .Next}}{{if .Q}}&q={{.Q}}{{end}}">Older →</a></td></tr>{{end}}
+{{end}}
+
+{{define "mail"}}
+{{with .M}}
+<div class="card">
+  <div class="inline" style="justify-content:space-between">
+    <a href="/">← Inbox</a>
+    <button class="danger" hx-delete="/mail/{{id .ID}}?back=1" hx-confirm="Delete this mail?">Delete</button>
+  </div>
+  <h1 style="margin-top:10px">{{.Subject}}</h1>
+  <dl>
+    <dt>From</dt><dd>{{.From}}</dd>
+    <dt>To</dt><dd>{{.To}}</dd>
+    {{if .Cc}}<dt>Cc</dt><dd>{{.Cc}}</dd>{{end}}
+    <dt>Date</dt><dd>{{.Date}}</dd>
+    <dt>Expires</dt><dd class="mute">in {{left .At}}</dd>
+    {{if .Files}}<dt>Files</dt><dd>
+      {{$id := .ID}}{{range $i, $f := .Files}}
+        {{if $f.Stored}}<a class="tag" href="/mail/{{id $id}}/att/{{$i}}" hx-boost="false" download>📎 {{$f.Name}} · {{human $f.Size}}</a>
+        {{else}}<span class="tag mute" title="too large to keep">{{$f.Name}}</span>{{end}}
+      {{end}}
+    </dd>{{end}}
+  </dl>
+  {{if .Log}}<details style="margin-top:10px"><summary class="mute">Delivery log ({{len .Log}})</summary><ul class="log">{{range .Log}}<li>{{.}}</li>{{end}}</ul></details>{{end}}
+</div>
+{{end}}
+
+<div class="card">
+  {{if .Cut}}<p class="hint">This mail was too long to keep in full; the end is cut off.</p>{{end}}
+  {{if .HasHTML}}
+    <details><summary class="mute">Plain text</summary><pre class="body">{{.Text}}</pre></details>
+    <iframe src="/mail/{{id .M.ID}}/html" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" title="Message"></iframe>
+  {{else}}
+    <pre class="body">{{if .Text}}{{.Text}}{{else}}(no text content){{end}}</pre>
+  {{end}}
+</div>
+
+<div class="card">
+  <h2>Reply</h2>
+  <form hx-post="/mail/{{id .M.ID}}/reply" hx-target="#reply-msg" hx-disabled-elt="find button">
+    <div class="grid" style="margin-bottom:8px">
+      <label>To<input name="to" value="{{.ReplyTo}}" required></label>
+      <label>Subject<input name="subject" value="{{.ReplySubj}}"></label>
+    </div>
+    <textarea name="body" placeholder="Your reply. The original is quoted below it automatically." required></textarea>
+    <div class="inline" style="margin-top:8px">
+      <button>Send reply</button>
+      <span class="htmx-indicator mute">Sending…</span>
+      <span id="reply-msg"></span>
+    </div>
+    <p class="hint" style="margin-top:8px">Sent from {{.M.ToAddr}} straight to the recipient's mail server.</p>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Forward</h2>
+  <form class="inline" hx-post="/mail/{{id .M.ID}}/forward" hx-target="#fwd-msg">
+    <input name="to" list="fwd-dests" placeholder="name@example.com" required style="flex:1;min-width:200px">
+    <datalist id="fwd-dests">{{range .Forwards}}<option value="{{.Target}}">{{.Name}}</option>{{end}}</datalist>
+    <button>Forward</button>
+    <span id="fwd-msg"></span>
+  </form>
+</div>
+{{end}}
+
+{{/* ---------------------------------------------------------- compose */}}
+
+{{define "compose"}}
+<div class="card">
+  <h1>New mail</h1>
+  {{if .Domains}}
+  <form hx-post="/compose" hx-encoding="multipart/form-data" hx-target="#compose-msg" hx-disabled-elt="find button">
+    <div class="grid" style="margin-bottom:8px">
+      <label>From<span class="from">
+        <input name="local" value="{{.Local}}" placeholder="name" required autocomplete="off">
+        <span class="mute">@</span>
+        <select name="domain">{{$d := .Domain}}{{range .Domains}}<option value="{{.}}" {{if eq . $d}}selected{{end}}>{{.}}</option>{{end}}</select>
+      </span></label>
+      <label>To<input name="to" type="email" value="{{.To}}" placeholder="name@example.com" required></label>
+    </div>
+    <label>Subject<input name="subject" value="{{.Subject}}" style="margin-bottom:8px"></label>
+    <textarea name="body" placeholder="Your message" style="min-height:220px"></textarea>
+    <label class="mute" style="display:block;margin-top:8px">Attachments (up to {{.Max}}, {{.Limit}} in total)
+      <input type="file" name="files" multiple>
+    </label>
+    <div class="inline" style="margin-top:10px">
+      <button>Send</button>
+      <span class="htmx-indicator mute">Sending…</span>
+      <span id="compose-msg"></span>
+    </div>
+    <p class="hint" style="margin-top:8px">Delivered straight to the recipient's mail server and kept in Sent.</p>
+  </form>
+  {{else}}
+  <p class="hint">Add an <a href="/domains">allowed domain</a> first: mail can only be sent from one.</p>
+  {{end}}
+</div>
+{{end}}
+
+{{/* ------------------------------------------------------------- sent */}}
+
+{{define "sent"}}
+<div class="card">
+  <form class="inline" action="/sent" method="get">
+    <input type="search" name="q" value="{{.Q}}" placeholder="Search sender, recipient or subject" style="flex:1;min-width:180px">
+    <button>Search</button>
+    {{if .Q}}<a href="/sent">Clear</a>{{end}}
+  </form>
+</div>
+<div class="card" style="padding:4px 10px">
+<table>
+  <thead><tr><th>To</th><th>Subject</th><th class="hide-sm">From</th><th class="nowrap">Sent</th><th></th></tr></thead>
+  <tbody>
+  {{range .Rows}}
+  <tr>
+    <td><a class="row-link" href="/sent/{{id .ID}}">{{.ToAddr}}</a></td>
+    <td class="subj"><a class="row-link" href="/sent/{{id .ID}}">{{template "sent-kind" .}}{{or .Subject "(no subject)"}}{{if .Files}} 📎{{end}}</a></td>
+    <td class="hide-sm mute">{{.FromAddr}}</td>
+    <td class="nowrap mute" title="expires in {{left .At}}">{{ago .At}}</td>
+    <td><button class="danger" hx-delete="/sent/{{id .ID}}" hx-confirm="Delete this sent mail?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5" class="mute">Nothing sent{{if .Q}} matches “{{.Q}}”{{end}}.</td></tr>
+  {{end}}
+  {{if .More}}<tr><td colspan="5"><a href="/sent?before={{id .Next}}{{if .Q}}&q={{.Q}}{{end}}">Older →</a></td></tr>{{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+
+{{define "sent-kind"}}{{if eq .Kind "reply"}}<span class="tag">↩ reply</span> {{else if eq .Kind "forward"}}<span class="tag">✉ fwd</span> {{end}}{{end}}
+
+{{define "sent-mail"}}
+{{with .M}}
+<div class="card">
+  <div class="inline" style="justify-content:space-between">
+    <a href="/sent">← Sent</a>
+    <button class="danger" hx-delete="/sent/{{id .ID}}?back=1" hx-confirm="Delete this sent mail?">Delete</button>
+  </div>
+  <h1 style="margin-top:10px">{{template "sent-kind" .}}{{or .Subject "(no subject)"}}</h1>
+  <dl>
+    <dt>From</dt><dd>{{.From}}</dd>
+    <dt>To</dt><dd>{{.To}}</dd>
+    <dt>Date</dt><dd>{{.Date}}</dd>
+    <dt>Expires</dt><dd class="mute">in {{left .At}}</dd>
+    {{if .Files}}<dt>Files</dt><dd>
+      {{$id := .ID}}{{range $i, $f := .Files}}
+        {{if $f.Stored}}<a class="tag" href="/sent/{{id $id}}/att/{{$i}}" hx-boost="false" download>📎 {{$f.Name}} · {{human $f.Size}}</a>
+        {{else}}<span class="tag mute" title="attached from the original mail">{{$f.Name}}</span>{{end}}
+      {{end}}
+    </dd>{{end}}
+  </dl>
+  {{if $.HasOrig}}<p style="margin:10px 0 0"><a href="/mail/{{id .Orig}}">Original mail →</a></p>{{end}}
+  {{if .Log}}<details style="margin-top:10px" open><summary class="mute">Delivery log ({{len .Log}})</summary><ul class="log">{{range .Log}}<li>{{.}}</li>{{end}}</ul></details>{{end}}
+</div>
+{{end}}
+<div class="card">
+  <pre class="body">{{if .Text}}{{.Text}}{{else}}(no text content){{end}}</pre>
+</div>
+{{end}}
+
+{{/* ------------------------------------------------------------ rules */}}
+
+{{define "rules"}}
+<div class="card">
+  <h1>{{.Title}}</h1>
+  <p class="hint">{{.Hint}}</p>
+  <form class="inline" hx-post="{{.Path}}" hx-target="#rule-rows" hx-swap="innerHTML" data-reset>
+    <input name="key" placeholder="{{.Placeholder}}" required style="flex:2;min-width:180px">
+    <input name="note" placeholder="Note (optional)" style="flex:2;min-width:140px">
+    <button>Add</button>
+    <span id="form-msg"></span>
+  </form>
+</div>
+<div class="card" style="padding:4px 10px">
+<table>
+  <thead><tr><th>{{if eq .Kind "blocked"}}Pattern{{else}}Domain{{end}}</th><th>Note</th><th class="hide-sm">Added</th><th></th></tr></thead>
+  <tbody id="rule-rows">{{template "rule-rows" .}}</tbody>
+</table>
+</div>
+{{end}}
+
+{{define "rule-rows"}}
+{{$path := .Path}}
+{{range .Rules}}
+<tr>
+  <td><code>{{.Key}}</code></td>
+  <td class="mute">{{.Note}}</td>
+  <td class="hide-sm mute nowrap">{{.Created.Format "2006-01-02"}}</td>
+  <td><button class="danger" hx-delete="{{$path}}/{{esc .Key}}" hx-confirm="Remove {{.Key}}?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
+</tr>
+{{else}}
+<tr><td colspan="4" class="mute">None yet.</td></tr>
+{{end}}
+{{end}}
+
+{{/* ----------------------------------------------------- destinations */}}
+
+{{define "dests"}}
+<div class="card">
+  <h1>Destinations</h1>
+  <p class="hint">Every accepted mail goes to each enabled destination whose sender filter matches. An empty filter receives everything. Filters take addresses, domains (with subdomains) or globs like <code>*@bank.com</code>, separated by commas.</p>
+  <form hx-post="/dests" hx-target="#dest-rows" hx-swap="innerHTML" data-reset>
+    <div class="grid">
+      <label>Type<select name="kind"><option value="telegram">Telegram chat</option><option value="email">Email forward</option></select></label>
+      <label>Chat id or email<input name="target" placeholder="-1001234567890 or you@x.com" required></label>
+      <label>Name<input name="name" placeholder="Ops channel"></label>
+      <label>Sender filter<input name="senders" placeholder="empty = all mail"></label>
+      <div class="inline"><button>Add</button><span id="form-msg"></span></div>
+    </div>
+  </form>
+</div>
+<div class="card" style="padding:4px 10px">
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Target</th><th>Sender filter</th><th></th></tr></thead>
+  <tbody id="dest-rows">{{template "dest-rows" .}}</tbody>
+</table>
+</div>
+{{end}}
+
+{{define "dest-rows"}}
+{{range .}}{{template "dest-row" .}}{{else}}<tr><td colspan="5" class="mute">No destinations: mail is stored in the inbox only.</td></tr>{{end}}
+{{end}}
+
+{{define "dest-row"}}
+<tr id="dest-{{.ID}}" class="{{if not .Enabled}}off{{end}}">
+  <td>{{or .Name "—"}}</td>
+  <td class="nowrap">{{if eq .Kind "telegram"}}✈ Telegram{{else}}✉ Email{{end}}</td>
+  <td><code>{{.Target}}</code></td>
+  <td>{{range .Senders}}<span class="tag">{{.}}</span>{{else}}<span class="mute">all mail</span>{{end}}</td>
+  <td>
+    <div class="inline" style="justify-content:flex-end">
+      <button class="ghost" hx-post="/dests/{{.ID}}/test" hx-target="#dest-msg-{{.ID}}" hx-disabled-elt="this">Test</button>
+      <button class="ghost" hx-post="/dests/{{.ID}}/toggle" hx-target="closest tr" hx-swap="outerHTML">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+      <button class="ghost" hx-get="/dests/{{.ID}}/edit" hx-target="closest tr" hx-swap="outerHTML">Edit</button>
+      <button class="danger" hx-delete="/dests/{{.ID}}" hx-confirm="Delete this destination?" hx-target="closest tr" hx-swap="outerHTML">✕</button>
+    </div>
+    <div id="dest-msg-{{.ID}}" style="text-align:right;font-size:13px"></div>
+  </td>
+</tr>
+{{end}}
+
+{{define "dest-edit"}}
+<tr id="dest-{{.ID}}">
+  <td colspan="5">
+    <form hx-put="/dests/{{.ID}}" hx-target="closest tr" hx-swap="outerHTML">
+      <div class="grid">
+        <label>Type<select name="kind"><option value="telegram" {{if eq .Kind "telegram"}}selected{{end}}>Telegram chat</option><option value="email" {{if eq .Kind "email"}}selected{{end}}>Email forward</option></select></label>
+        <label>Chat id or email<input name="target" value="{{.Target}}" required></label>
+        <label>Name<input name="name" value="{{.Name}}"></label>
+        <label>Sender filter<input name="senders" value="{{join .Senders ", "}}" placeholder="empty = all mail"></label>
+        <div class="inline">
+          <button>Save</button>
+          <button type="button" class="ghost" hx-get="/dests/{{.ID}}" hx-target="closest tr" hx-swap="outerHTML">Cancel</button>
+        </div>
+      </div>
+      <div id="form-msg-{{.ID}}" style="margin-top:6px"></div>
+    </form>
+  </td>
+</tr>
+{{end}}
