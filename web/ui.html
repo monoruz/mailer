@@ -1,7 +1,9 @@
 {{define "layout"}}<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
 <title>{{.Title}} · mailer</title>
 <style>
 :root{--bg:#f4f4f6;--card:#fff;--fg:#1c1c1e;--mute:#6e6e73;--line:#e3e3e8;--acc:#0a66d8;--bad:#c62828;--good:#1b7f3b;--unread:#eef4ff}
@@ -48,7 +50,76 @@ iframe{width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;bac
 .off{opacity:.5}
 .htmx-indicator{display:none}.htmx-request .htmx-indicator,.htmx-request.htmx-indicator{display:inline}
 ul.log{margin:0;padding-left:18px;font-size:13px}
-@media (max-width:640px){.hide-sm{display:none}main{padding:10px}}
+nav .tab i{display:none;font-style:normal}
+nav .badge{margin-left:4px}
+nav a.compose i{display:inline;margin-right:4px}
+.sm{display:none}
+code{word-break:break-all}
+a,button,summary{-webkit-tap-highlight-color:transparent}
+button:active{opacity:.7}
+
+/* ---- phones: bottom tab bar, 16px inputs (no iOS zoom), tables as stacked cards */
+@media (max-width:640px){
+  .hide-sm,.lg,nav .brand{display:none}
+  .sm{display:block}
+  body{padding-bottom:calc(60px + env(safe-area-inset-bottom))}
+  main{padding:10px max(10px,env(safe-area-inset-right)) 10px max(10px,env(safe-area-inset-left))}
+  .card{padding:14px;border-radius:14px;margin-bottom:10px}
+  input,select,textarea{font-size:16px;padding:10px 11px}
+  button{padding:10px 14px;min-height:40px}
+  iframe{height:60vh}
+
+  nav{position:fixed;top:auto;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(4,1fr);gap:0;
+      padding:4px 4px env(safe-area-inset-bottom);border-bottom:0;border-top:1px solid var(--line)}
+  nav .tab{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 0;
+           border-radius:10px;font-size:11px;color:var(--mute);background:none;cursor:pointer;list-style:none}
+  nav .tab::-webkit-details-marker{display:none}
+  nav .tab i{display:block;font-size:20px;line-height:24px}
+  nav .tab.on,nav a.compose.on{color:var(--acc);font-weight:600;background:none;box-shadow:none}
+  nav a.compose{background:none;color:var(--mute);font-weight:400}
+  nav a.compose i{display:block;margin:0;color:#fff;background:var(--acc);border-radius:50%;width:28px;height:24px;font-size:15px;text-align:center}
+  nav .tab .badge{position:absolute;top:2px;left:calc(50% + 6px);margin:0}
+  .more .menu{position:absolute;right:8px;bottom:calc(100% + 6px);min-width:200px;background:var(--card);
+              border:1px solid var(--line);border-radius:12px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+  .more .menu a{display:block;padding:12px;border-radius:8px;color:var(--fg)}
+  .more .menu a.on{background:var(--bg);font-weight:600}
+
+  /* list tables become cards; the markup stays the same */
+  table.list thead{display:none}
+  table.list,table.list tbody{display:block}
+  table.list tr{display:grid;gap:2px 10px;padding:10px 4px;border-bottom:1px solid var(--line);align-items:center}
+  table.list tr:last-child{border-bottom:0}
+  table.list td{padding:0;border:0;min-width:0}
+  table.list td:only-child{grid-column:1/-1}
+  table.list tr.unread{background:var(--unread);margin:0 -10px;padding:10px 14px}
+  table.list tr.unread td{background:none}
+  table.list td.act button{min-width:40px;min-height:40px;padding:0 10px}
+
+  /* inbox and sent: sender + time on top, subject below, delete on the right */
+  table.mails tr{grid-template-columns:1fr auto auto;grid-template-areas:"who when act" "subj subj act"}
+  table.mails td.who{grid-area:who;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  table.mails td.who .row-link{overflow:hidden;text-overflow:ellipsis}
+  table.mails td.when{grid-area:when;font-size:12px}
+  table.mails td.subj{grid-area:subj;color:var(--mute)}
+  table.mails tr.unread td.subj{color:var(--fg)}
+  table.mails td.act{grid-area:act}
+
+  /* allowed domains / blocked senders */
+  table.rules tr{grid-template-columns:1fr auto;grid-template-areas:"key act" "note act"}
+  table.rules td.key{grid-area:key}
+  table.rules td.note{grid-area:note;font-size:13px}
+  table.rules td.act{grid-area:act}
+
+  /* destinations */
+  table.dests tr{grid-template-columns:1fr auto;grid-template-areas:"name kind" "target target" "send send" "act act";gap:6px 10px}
+  table.dests td.name{grid-area:name;font-weight:600}
+  table.dests td.kind{grid-area:kind;color:var(--mute);font-size:13px}
+  table.dests td.target{grid-area:target}
+  table.dests td.send{grid-area:send}
+  table.dests td.act{grid-area:act}
+  table.dests td.act .inline{justify-content:flex-start!important}
+  table.dests td.act [id^=dest-msg-]{text-align:left!important}
+}
 </style>
 <script src="/static/htmx.min.js"></script>
 <script src="/static/app.js"></script>
@@ -56,12 +127,21 @@ ul.log{margin:0;padding-left:18px;font-size:13px}
 <body hx-boost="true">
 <nav>
   <span class="brand">✉️ mailer</span>
-  <a href="/" class="{{if eq .Nav "inbox"}}on{{end}}">Inbox {{if .Unread}}<span class="badge">{{.Unread}}</span>{{end}}</a>
-  <a href="/compose" class="compose {{if eq .Nav "compose"}}on{{end}}">✎ Compose</a>
-  <a href="/sent" class="{{if eq .Nav "sent"}}on{{end}}">Sent</a>
-  <a href="/dests" class="{{if eq .Nav "dests"}}on{{end}}">Destinations</a>
-  <a href="/domains" class="{{if eq .Nav "domains"}}on{{end}}">Allowed domains</a>
-  <a href="/blocked" class="{{if eq .Nav "blocked"}}on{{end}}">Blocked senders</a>
+  <a href="/" class="tab {{if eq .Nav "inbox"}}on{{end}}"><i>📥</i><span>Inbox</span>{{if .Unread}}<span class="badge">{{.Unread}}</span>{{end}}</a>
+  <a href="/compose" class="tab compose {{if eq .Nav "compose"}}on{{end}}"><i>✎</i><span>Compose</span></a>
+  <a href="/sent" class="tab {{if eq .Nav "sent"}}on{{end}}"><i>📤</i><span>Sent</span></a>
+  <a href="/dests" class="lg {{if eq .Nav "dests"}}on{{end}}">Destinations</a>
+  <a href="/domains" class="lg {{if eq .Nav "domains"}}on{{end}}">Allowed domains</a>
+  <a href="/blocked" class="lg {{if eq .Nav "blocked"}}on{{end}}">Blocked senders</a>
+  {{/* Phones: the settings pages sit behind "More" in the bottom tab bar. */}}
+  <details class="more sm">
+    <summary class="tab {{if or (eq .Nav "dests") (eq .Nav "domains") (eq .Nav "blocked")}}on{{end}}"><i>⋯</i><span>More</span></summary>
+    <div class="menu">
+      <a href="/dests" class="{{if eq .Nav "dests"}}on{{end}}">Destinations</a>
+      <a href="/domains" class="{{if eq .Nav "domains"}}on{{end}}">Allowed domains</a>
+      <a href="/blocked" class="{{if eq .Nav "blocked"}}on{{end}}">Blocked senders</a>
+    </div>
+  </details>
 </nav>
 <main>
 {{with .Data}}
@@ -91,7 +171,7 @@ ul.log{margin:0;padding-left:18px;font-size:13px}
   </form>
 </div>
 <div class="card" style="padding:4px 10px">
-<table>
+<table class="list mails">
   <thead><tr><th>From</th><th>Subject</th><th class="hide-sm">To</th><th class="nowrap">Received</th><th></th></tr></thead>
   <tbody id="mail-rows" {{if not (or .Q .Paged)}}hx-get="/" hx-trigger="every 30s" hx-swap="innerHTML"{{end}}>
   {{template "mail-rows" .}}
@@ -103,11 +183,11 @@ ul.log{margin:0;padding-left:18px;font-size:13px}
 {{define "mail-rows"}}
 {{range .Rows}}
 <tr class="{{if not .Read}}unread{{end}}">
-  <td><a class="row-link" href="/mail/{{id .ID}}" title="{{.From}}">{{.FromAddr}}</a></td>
+  <td class="who"><a class="row-link" href="/mail/{{id .ID}}" title="{{.From}}">{{.FromAddr}}</a></td>
   <td class="subj"><a class="row-link" href="/mail/{{id .ID}}">{{.Subject}}{{if .Files}} 📎{{end}}{{if .Replied}} <span class="mute">↩</span>{{end}}</a></td>
   <td class="hide-sm mute">{{.ToAddr}}</td>
-  <td class="nowrap mute" title="expires in {{left .At}}">{{ago .At}}</td>
-  <td><button class="danger" hx-delete="/mail/{{id .ID}}" hx-confirm="Delete this mail?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
+  <td class="when nowrap mute" title="expires in {{left .At}}">{{ago .At}}</td>
+  <td class="act"><button class="danger" aria-label="Delete" hx-delete="/mail/{{id .ID}}" hx-confirm="Delete this mail?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
 </tr>
 {{else}}
 <tr><td colspan="5" class="mute">No mail{{if .Q}} matches “{{.Q}}”{{end}}.</td></tr>
@@ -222,16 +302,16 @@ ul.log{margin:0;padding-left:18px;font-size:13px}
   </form>
 </div>
 <div class="card" style="padding:4px 10px">
-<table>
+<table class="list mails">
   <thead><tr><th>To</th><th>Subject</th><th class="hide-sm">From</th><th class="nowrap">Sent</th><th></th></tr></thead>
   <tbody>
   {{range .Rows}}
   <tr>
-    <td><a class="row-link" href="/sent/{{id .ID}}">{{.ToAddr}}</a></td>
+    <td class="who"><a class="row-link" href="/sent/{{id .ID}}">{{.ToAddr}}</a></td>
     <td class="subj"><a class="row-link" href="/sent/{{id .ID}}">{{template "sent-kind" .}}{{or .Subject "(no subject)"}}{{if .Files}} 📎{{end}}</a></td>
     <td class="hide-sm mute">{{.FromAddr}}</td>
-    <td class="nowrap mute" title="expires in {{left .At}}">{{ago .At}}</td>
-    <td><button class="danger" hx-delete="/sent/{{id .ID}}" hx-confirm="Delete this sent mail?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
+    <td class="when nowrap mute" title="expires in {{left .At}}">{{ago .At}}</td>
+    <td class="act"><button class="danger" aria-label="Delete" hx-delete="/sent/{{id .ID}}" hx-confirm="Delete this sent mail?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
   </tr>
   {{else}}
   <tr><td colspan="5" class="mute">Nothing sent{{if .Q}} matches “{{.Q}}”{{end}}.</td></tr>
@@ -287,7 +367,7 @@ ul.log{margin:0;padding-left:18px;font-size:13px}
   </form>
 </div>
 <div class="card" style="padding:4px 10px">
-<table>
+<table class="list rules">
   <thead><tr><th>{{if eq .Kind "blocked"}}Pattern{{else}}Domain{{end}}</th><th>Note</th><th class="hide-sm">Added</th><th></th></tr></thead>
   <tbody id="rule-rows">{{template "rule-rows" .}}</tbody>
 </table>
@@ -298,10 +378,10 @@ ul.log{margin:0;padding-left:18px;font-size:13px}
 {{$path := .Path}}
 {{range .Rules}}
 <tr>
-  <td><code>{{.Key}}</code></td>
-  <td class="mute">{{.Note}}</td>
+  <td class="key"><code>{{.Key}}</code></td>
+  <td class="note mute">{{.Note}}</td>
   <td class="hide-sm mute nowrap">{{.Created.Format "2006-01-02"}}</td>
-  <td><button class="danger" hx-delete="{{$path}}/{{esc .Key}}" hx-confirm="Remove {{.Key}}?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
+  <td class="act"><button class="danger" aria-label="Remove" hx-delete="{{$path}}/{{esc .Key}}" hx-confirm="Remove {{.Key}}?" hx-target="closest tr" hx-swap="outerHTML">✕</button></td>
 </tr>
 {{else}}
 <tr><td colspan="4" class="mute">None yet.</td></tr>
@@ -325,7 +405,7 @@ ul.log{margin:0;padding-left:18px;font-size:13px}
   </form>
 </div>
 <div class="card" style="padding:4px 10px">
-<table>
+<table class="list dests">
   <thead><tr><th>Name</th><th>Type</th><th>Target</th><th>Sender filter</th><th></th></tr></thead>
   <tbody id="dest-rows">{{template "dest-rows" .}}</tbody>
 </table>
@@ -338,11 +418,11 @@ ul.log{margin:0;padding-left:18px;font-size:13px}
 
 {{define "dest-row"}}
 <tr id="dest-{{.ID}}" class="{{if not .Enabled}}off{{end}}">
-  <td>{{or .Name "—"}}</td>
-  <td class="nowrap">{{if eq .Kind "telegram"}}✈ Telegram{{else}}✉ Email{{end}}</td>
-  <td><code>{{.Target}}</code></td>
-  <td>{{range .Senders}}<span class="tag">{{.}}</span>{{else}}<span class="mute">all mail</span>{{end}}</td>
-  <td>
+  <td class="name">{{or .Name "—"}}</td>
+  <td class="kind nowrap">{{if eq .Kind "telegram"}}✈ Telegram{{else}}✉ Email{{end}}</td>
+  <td class="target"><code>{{.Target}}</code></td>
+  <td class="send">{{range .Senders}}<span class="tag">{{.}}</span>{{else}}<span class="mute">all mail</span>{{end}}</td>
+  <td class="act">
     <div class="inline" style="justify-content:flex-end">
       <button class="ghost" hx-post="/dests/{{.ID}}/test" hx-target="#dest-msg-{{.ID}}" hx-disabled-elt="this">Test</button>
       <button class="ghost" hx-post="/dests/{{.ID}}/toggle" hx-target="closest tr" hx-swap="outerHTML">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>

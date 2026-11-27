@@ -4,3 +4,10 @@ document.addEventListener("htmx:afterRequest", function (e) {
   var f = e.detail.elt;
   if (e.detail.successful && f.matches("form[data-reset]") && !e.detail.xhr.getResponseHeader("HX-Retarget")) f.reset();
 });
+
+// Closes the phone "More" menu on a tap anywhere outside it.
+document.addEventListener("click", function (e) {
+  document.querySelectorAll("details.more[open]").forEach(function (d) {
+    if (!d.contains(e.target)) d.removeAttribute("open");
+  });
+});
